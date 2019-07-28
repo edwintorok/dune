@@ -144,6 +144,7 @@ let all =
   ; Compute.command
   ; Upgrade.command
   ; Import_opam.command
+  ; Sync_deps.command
   ]
 
 let default =
