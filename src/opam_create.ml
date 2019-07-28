@@ -159,13 +159,6 @@ let add_rule sctx ~project ~pkg =
         Opam_file.parse (Lexbuf.from_string ~fname:(Path.to_string opam_path)
                            template)
       in
-      let project =
-        if Dune_project.synchronise_opam_deps project then
-          let opam_source_file = pkg |> Package.opam_file |> Path.source |> Opam_file.load in
-          project
-          |> (Package.Name.Map.singleton pkg.Package.name opam_source_file
-              |> Dune_project.update_from_opam)
-        else project in
       let existing_vars_template = Opam_file.existing_variables opamfile in
       let generated_fields =
         opam_fields project pkg
