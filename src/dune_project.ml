@@ -172,6 +172,13 @@ module Source_kind = struct
              [ Pp.textf "GitHub repository must be of form user/repo" ])
       ; "uri", string >>| fun s -> Url s
       ]
+
+  let encode =
+    let open Dune_lang.Encoder in
+    function
+    | Github (owner, repo) -> pair string string ("github", owner ^ "/" ^ repo)
+    | Url u -> string u
+
 end
 
 module File_key = struct
@@ -343,6 +350,7 @@ module Project_file_edit = struct
         let len = String.length s in
         if len > 0 && s.[len - 1] <> '\n' then output_char oc '\n'));
     what
+
 end
 
 let lang_stanza = Project_file_edit.lang_stanza
@@ -458,6 +466,19 @@ module Extension = struct
         } :: acc
       else
         acc)
+
+  let encode ~parsing_context ~extension_args:_ =
+    Hashtbl.foldi extensions ~init:[] ~f:(fun name e acc ->
+      (* TODO: args are not preserved *)
+      match Univ_map.find parsing_context @@ Syntax.key @@ syntax e with
+      | None -> acc
+      | Some ver ->
+        let open Dune_lang.Encoder in
+        (triple string string Syntax.Version.encode
+           ("using", name, ver))
+        :: acc
+    )
+
 end
 
 let interpret_lang_and_extensions ~(lang : Lang.Instance.t)
@@ -768,6 +789,139 @@ let parse ~dir ~lang ~opam_packages ~file =
      ; dialects
      ; explicit_js_mode
      })
+
+let encode
+      { name ; root = _ ; version ; source; license; authors
+      ; homepage ; documentation ; project_file = _ ; parsing_context
+      ; bug_reports ; maintainers
+      ; extension_args; stanza_parser = _ ; packages
+      ; implicit_transitive_deps ; wrapped_executables ; dune_version
+      ; allow_approx_merlin ; generate_opam_files
+      ; file_key = _ ; dialects = _ ; explicit_js_mode } =
+  let open Dune_lang.Encoder in
+  let name = match name with
+    | Name.Named s -> Some s
+    | Name.Anonymous _ -> None in
+  List.flatten [
+    record_fields
+      [ field "lang" (pair string Syntax.Version.encode) ("dune", dune_version)
+      ; field_o "name" string name
+      ; field_o "version" string version
+
+      ; field_b "allow_approximate_merlin" allow_approx_merlin
+      ; field_b "explicit_js_mode" explicit_js_mode
+      ; field_b "generate_opam_files" generate_opam_files
+      ; field "implicit_transitive_deps" bool ~default:true implicit_transitive_deps
+      ; field "wrapped_executables" bool ~default:true wrapped_executables
+
+      ; field_o "license" string license
+      ; field_l "maintainers" string maintainers
+      ; field_l "authors" string authors
+      ; field_o "source" Source_kind.encode source
+      ; field_o "homepage" string homepage
+      ; field_o "documentation" string documentation
+      ; field_o "bug_reports" string bug_reports
+      ]
+  ; Extension.encode ~parsing_context ~extension_args
+  (* TODO: dialects *)
+  ; List.map ~f:Package.encode (Package.Name.Map.values packages)
+  ]
+
+let source_kind_of_url url =
+  url |> String.lsplit2_exn ~on:':' |> snd |> String.split ~on:'/'
+  |> List.filter ~f:(fun s -> not @@ String.is_empty s)
+  |> function
+  | "github.com" :: owner :: repo :: _ -> Source_kind.Github (owner, repo)
+  | _ -> Source_kind.Url url
+
+let is_custom url =
+  match Option.map ~f:source_kind_of_url url with
+  | Some Source_kind.Url _ -> true
+  | _ -> false
+
+let update_from_opam packages t =
+  let string_of_opam_value = function
+    | OpamParserTypes.String(_, s) -> Some s
+    | _ -> None
+  in
+  let get_opam_string package field =
+    Opam_file.get_field package field
+    |> Option.bind ~f:string_of_opam_value
+  in
+  let get_opam_strings package field =
+    Opam_file.get_field package field
+    |> function
+    | Some OpamParserTypes.List(_, l) ->
+      List.filter_map ~f:string_of_opam_value l
+    | _ -> []
+  in
+  let generate_package name p =
+    let version = get_opam_string p "version"
+                  |> Option.map ~f:(fun s ->
+                    (s, Package.Version_source.Package))
+    in
+    let get_opam_dep field =
+      let open OpamParserTypes in
+      match Opam_file.get_field p field with
+      | Some (List (_, l)) ->
+        List.map l ~f:Package.Dependency.from_opam
+      | _ -> []
+    in
+  { Package.name
+  ; loc = Loc.none
+  ; path = Path.Source.(relative root p.file_name)
+  ; kind = Opam
+  ; version
+  ; synopsis = get_opam_string p "synopsis"
+  ; description = get_opam_string p "description"
+  ; depends = get_opam_dep "depends"
+  ; conflicts = get_opam_dep "conflicts"
+  ; depopts = get_opam_dep "depopts"
+  ; tags = get_opam_strings p "tags"
+  }
+  in
+  let merge_fields field =
+    packages |> Package.Name.Map.values
+    |> List.filter_map ~f:(fun p -> get_opam_string p field)
+    |> String.Set.of_list |> String.Set.to_list
+  in
+  let license =
+    merge_fields "license"
+    |> function
+    | [] -> None
+    | l -> Some (String.concat ~sep:"," l)
+  in
+  let merge_fields_one field =
+    (* TODO: what if they are different *)
+    merge_fields field |> List.hd_opt
+  in
+  let source = merge_fields_one "source" in
+  let homepage = merge_fields_one "homepage" in
+  let documentation = merge_fields_one "doc" in
+  let bug_reports = merge_fields_one "bug-report" in
+  (* infer Github url, otherwise use full urls for everything if available *)
+  let source = Option.map ~f:source_kind_of_url source in
+  let homepage = if is_custom homepage then homepage else None in
+  let bug_reports = if is_custom bug_reports then bug_reports else None in
+  { t with
+    generate_opam_files = true
+  ; dune_version = max t.dune_version (1, 10)
+  ; license
+  ; maintainers = merge_fields "maintainers"
+  ; authors = merge_fields "authors"
+  ; source
+  ; homepage
+  ; documentation
+  ; bug_reports
+  ; packages = Package.Name.Map.mapi ~f:generate_package packages
+  }
+
+let update_project_file t ~f =
+  let what = Project_file_edit.ensure_exists t.project_file in
+  t |> f |> encode |> List.map ~f:(fun s ->
+    s |> Dune_lang.add_loc ~loc:Loc.none |> Dune_lang.Cst.concrete)
+  |> Format_dune_lang.write_file ~path:(Path.source t.project_file.file);
+  what
 
 let load_dune_project ~dir opam_packages =
   let file = Path.Source.relative dir filename in

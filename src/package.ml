@@ -77,6 +77,17 @@ module Dependency = struct
       | Gt -> `Gt
       | Lt -> `Lt
       | Neq -> `Neq
+
+    let from_relop : OpamParserTypes.relop -> t = function
+      | `Eq -> Eq
+      | `Geq -> Gte
+      | `Leq -> Lte
+      | `Gt -> Gt
+      | `Lt -> Lt
+      | `Neq -> Neq
+
+    let encode t = t |> to_relop |> OpamPrinter.relop |> Dune_lang.atom
+
   end
 
   module Constraint = struct
@@ -92,6 +103,12 @@ module Dependency = struct
           Var (String.drop s 1)
         else
           QVar s
+
+      let encode =
+        let open Dune_lang.Encoder in
+        function
+        | QVar s -> string s
+        | Var s -> string (":" ^ s)
 
       let to_opam : t -> OpamParserTypes.value =
         let nopos = Opam_file.nopos in
@@ -132,6 +149,14 @@ module Dependency = struct
           sum (ops @ logops)
       end
 
+    let rec encode =
+      let open Dune_lang.Encoder in
+      function
+      | Bvar var -> Var.encode var
+      | Uop (op, var) -> pair Op.encode Var.encode (op, var)
+      | And lst -> pair string (list encode) ("and", lst)
+      | Or lst -> pair string (list encode) ("or", lst)
+
     let rec to_dyn =
       let open Dyn.Encoder in
       function
@@ -166,6 +191,12 @@ module Dependency = struct
         ; constraint_ = None
         })
 
+  let encode { name; constraint_ } =
+    let open Dune_lang.Encoder in
+    match constraint_ with
+    | None -> Name.encode name
+    | Some c -> pair Name.encode Constraint.encode (name, c)
+
   let rec opam_constraint : Constraint.t -> OpamParserTypes.value =
     let nopos = Opam_file.nopos in
     function
@@ -181,6 +212,25 @@ module Dependency = struct
     | And []
     | Or [] -> Code_error.raise "opam_constraint" []
 
+  let rec constraint_from_opam : OpamParserTypes.value -> Constraint.t =
+    function
+    | Prefix_relop (_, relop, String(_, x)) ->
+      Uop(Op.from_relop relop, Constraint.Var.QVar x)
+    | Prefix_relop (_, relop, Ident(_, x)) ->
+      Uop(Op.from_relop relop, Constraint.Var.Var x)
+    | Logop(_, `And, c, cs) ->
+      (match constraint_from_opam cs with
+      | And cs -> And(constraint_from_opam c :: cs)
+      | _ -> assert false (* TODO: log *))
+    | Logop(_, `Or, c, cs) ->
+      (match constraint_from_opam cs with
+       (* TODO: is And correct here? *)
+      | And cs -> Or(constraint_from_opam c :: cs)
+      | _ -> assert false (* TODO: log *))
+    | String(_, x) -> Bvar (Constraint.Var.QVar x)
+    | Ident(_, x) -> Bvar (Constraint.Var.Var x)
+    | _ -> assert false (* TODO *)
+
   let opam_depend : t -> OpamParserTypes.value =
     let nopos = Opam_file.nopos in
     fun { name; constraint_ } ->
@@ -190,6 +240,13 @@ module Dependency = struct
       match constraint_ with
       | None -> pkg
       | Some c -> Option (nopos, pkg, [c])
+
+  let from_opam : OpamParserTypes.value -> t = function
+    | String (_, s) -> { name = Name.of_string s; constraint_ = None }
+    | Option (_, String (_, s), [ c ]) ->
+      { name = Name.of_string s;
+        constraint_ = Some (constraint_from_opam c) }
+    | _ -> assert false (* TODO *)
 
   let to_dyn { name; constraint_ } =
     let open Dyn.Encoder in
@@ -276,6 +333,23 @@ let to_dyn { name; path; version ; synopsis ; description
       Option (Option.map version ~f:(fun (v, s) ->
         Dyn.Tuple [String v; Version_source.to_dyn s]))
     ]
+
+let encode { name; path = _; version ; synopsis ; description
+           ; depends ; conflicts ; depopts ; kind = _ ; tags ; loc = _ } =
+  let version = match version with
+    | Some (v, Version_source.Package) -> Some v
+    | Some (_, Version_source.Project) | None -> None
+  in
+  Dune_lang.List Dune_lang.Encoder.(record_fields
+      [ field "name" Name.encode name
+      ; field_o "version" string version
+      ; field_o "synopsis" string synopsis
+      ; field_o "description" string description
+      ; field_l "depends" Dependency.encode depends
+      ; field_l "conflicts" Dependency.encode conflicts
+      ; field_l "depopts" Dependency.encode depopts
+      ; field_l "tags" string tags
+      ])
 
 let opam_file t = Path.Source.relative t.path (Name.opam_fn t.name)
 

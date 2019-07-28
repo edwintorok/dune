@@ -59,10 +59,11 @@ module Dependency : sig
     }
 
   val opam_depend : t -> OpamParserTypes.value
+  val from_opam : OpamParserTypes.value -> t
 
   val to_dyn : t -> Dyn.t
 
-  val decode : t Dune_lang.Decoder.t
+  include Dune_lang.Conv with type t := t
 end
 
 module Kind : sig
@@ -87,6 +88,7 @@ type t =
   }
 
 val decode : dir:Path.Source.t -> t Dune_lang.Decoder.t
+val encode: t Dune_lang.Encoder.t
 
 val opam_file : t -> Path.Source.t
 val meta_file : t -> Path.Source.t

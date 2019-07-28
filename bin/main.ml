@@ -143,6 +143,7 @@ let all =
   ; Format_dune_file.command
   ; Compute.command
   ; Upgrade.command
+  ; Import_opam.command
   ]
 
 let default =

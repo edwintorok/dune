@@ -153,6 +153,11 @@ val ensure_project_file_exists : t -> created_or_already_exist
 (** Append the following text to the project file *)
 val append_to_project_file : t -> string -> created_or_already_exist
 
+val update_from_opam : Opam_file.t Package.Name.Map.t -> t -> t
+
+(** Update or create a project file using [f] to update its fields *)
+val update_project_file: t -> f:(t -> t) -> created_or_already_exist
+
 (** Default language version to use for projects that don't have a
     [dune-project] file. The default value is the latest version of the
     dune language. *)
