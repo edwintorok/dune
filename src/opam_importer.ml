@@ -1,9 +1,13 @@
 open! Stdune
 
-let load_opam_file p =
-  Opam_file.load (Path.source p.Package.path)
 
 let import ~log tree =
+  let load_opam_file p =
+    let path = Path.relative (Path.source p.Package.path)
+                 (Package.Name.opam_fn p.Package.name) in
+    Log.infof log "Loading opam file %s" (Path.to_string path);
+    Opam_file.load path
+  in
   let root = File_tree.root tree in
   let dir = File_tree.Dir.path root in
   let files = File_tree.Dir.files root in

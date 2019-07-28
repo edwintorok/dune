@@ -18,10 +18,12 @@ let term =
   let+ common = Common.term in
   Common.set_common common ~targets:[];
   let log = Log.create common in
+  Scheduler.go ~log ~common (fun () ->
   Dune.File_tree.load Path.Source.root
     ~warn_when_seeing_jbuild_file:true
     ~ancestor_vcs:None
-  |> Dune.Opam_importer.import ~log
+  |> Dune.Opam_importer.import ~log;
+  Fiber.return ())
 
 
 let command = term, info

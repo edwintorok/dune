@@ -340,7 +340,7 @@ let encode { name; path = _; version ; synopsis ; description
     | Some (v, Version_source.Package) -> Some v
     | Some (_, Version_source.Project) | None -> None
   in
-  Dune_lang.List Dune_lang.Encoder.(record_fields
+  Dune_lang.List (Dune_lang.atom "package" :: Dune_lang.Encoder.(record_fields
       [ field "name" Name.encode name
       ; field_o "version" string version
       ; field_o "synopsis" string synopsis
@@ -349,7 +349,7 @@ let encode { name; path = _; version ; synopsis ; description
       ; field_l "conflicts" Dependency.encode conflicts
       ; field_l "depopts" Dependency.encode depopts
       ; field_l "tags" string tags
-      ])
+      ]))
 
 let opam_file t = Path.Source.relative t.path (Name.opam_fn t.name)
 

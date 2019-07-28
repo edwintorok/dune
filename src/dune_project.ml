@@ -467,13 +467,17 @@ module Extension = struct
       else
         acc)
 
-  let encode ~parsing_context ~extension_args:_ =
+  let encode ~parsing_context ~extension_args =
     Hashtbl.foldi extensions ~init:[] ~f:(fun name e acc ->
       (* TODO: args are not preserved *)
       match Univ_map.find parsing_context @@ Syntax.key @@ syntax e with
       | None -> acc
       | Some ver ->
         let open Dune_lang.Encoder in
+        let Extension ext = e in
+        match Univ_map.find extension_args ext.key with
+        | None -> acc
+        | Some _ ->
         (triple string string Syntax.Version.encode
            ("using", name, ver))
         :: acc
@@ -802,17 +806,19 @@ let encode
   let name = match name with
     | Name.Named s -> Some s
     | Name.Anonymous _ -> None in
+  default_dune_language_version := dune_version;
+  let lang = get_dune_lang () in
   List.flatten [
     record_fields
-      [ field "lang" (pair string Syntax.Version.encode) ("dune", dune_version)
+      [ field_l "lang" sexp [string "dune"; Syntax.Version.encode lang.version]
       ; field_o "name" string name
       ; field_o "version" string version
 
-      ; field_b "allow_approximate_merlin" allow_approx_merlin
-      ; field_b "explicit_js_mode" explicit_js_mode
-      ; field_b "generate_opam_files" generate_opam_files
-      ; field "implicit_transitive_deps" bool ~default:true implicit_transitive_deps
-      ; field "wrapped_executables" bool ~default:true wrapped_executables
+      ; field "allow_approximate_merlin" bool ~default:false allow_approx_merlin
+      ; field "explicit_js_mode" bool ~default:(explicit_js_mode_default ~lang) explicit_js_mode
+      ; field "generate_opam_files" bool ~default:false generate_opam_files
+      ; field "implicit_transitive_deps" bool ~default:(implicit_transitive_deps_default ~lang) implicit_transitive_deps
+      ; field "wrapped_executables" bool ~default:(wrapped_executables_default ~lang) wrapped_executables
 
       ; field_o "license" string license
       ; field_l "maintainers" string maintainers
@@ -831,7 +837,9 @@ let source_kind_of_url url =
   url |> String.lsplit2_exn ~on:':' |> snd |> String.split ~on:'/'
   |> List.filter ~f:(fun s -> not @@ String.is_empty s)
   |> function
-  | "github.com" :: owner :: repo :: _ -> Source_kind.Github (owner, repo)
+  | "github.com" :: owner :: repo :: _ ->
+    let repo = String.drop_suffix ~suffix:".git" repo |> Option.value ~default:repo in
+    Source_kind.Github (owner, repo)
   | _ -> Source_kind.Url url
 
 let is_custom url =
@@ -882,7 +890,12 @@ let update_from_opam packages t =
   in
   let merge_fields field =
     packages |> Package.Name.Map.values
-    |> List.filter_map ~f:(fun p -> get_opam_string p field)
+    |> List.map ~f:(fun p ->
+      match Opam_file.get_field p field with
+      | Some String(_, s) -> [s]
+      | Some List(_, l) -> List.filter_map ~f:string_of_opam_value l
+      | _ -> [])
+    |> List.flatten
     |> String.Set.of_list |> String.Set.to_list
   in
   let license =
@@ -895,7 +908,7 @@ let update_from_opam packages t =
     (* TODO: what if they are different *)
     merge_fields field |> List.hd_opt
   in
-  let source = merge_fields_one "source" in
+  let source = merge_fields_one "dev-repo" in
   let homepage = merge_fields_one "homepage" in
   let documentation = merge_fields_one "doc" in
   let bug_reports = merge_fields_one "bug-report" in
@@ -907,7 +920,7 @@ let update_from_opam packages t =
     generate_opam_files = true
   ; dune_version = max t.dune_version (1, 10)
   ; license
-  ; maintainers = merge_fields "maintainers"
+  ; maintainers = merge_fields "maintainer"
   ; authors = merge_fields "authors"
   ; source
   ; homepage
