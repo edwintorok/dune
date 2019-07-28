@@ -215,6 +215,7 @@ type t =
   ; dune_version    : Syntax.Version.t
   ; allow_approx_merlin : bool
   ; generate_opam_files : bool
+  ; synchronise_opam_deps: bool
   ; file_key : File_key.t
   ; dialects        : Dialect.DB.t
   ; explicit_js_mode : bool
@@ -240,6 +241,7 @@ let file_key t = t.file_key
 let implicit_transitive_deps t = t.implicit_transitive_deps
 let allow_approx_merlin t = t.allow_approx_merlin
 let generate_opam_files t = t.generate_opam_files
+let synchronise_opam_deps t = t.synchronise_opam_deps
 let dialects t = t.dialects
 let explicit_js_mode t = t.explicit_js_mode
 
@@ -249,7 +251,7 @@ let to_dyn
       ; bug_reports ; maintainers
       ; extension_args = _; stanza_parser = _ ; packages
       ; implicit_transitive_deps ; wrapped_executables ; dune_version
-      ; allow_approx_merlin ; generate_opam_files
+      ; allow_approx_merlin ; generate_opam_files; synchronise_opam_deps
       ; file_key ; dialects ; explicit_js_mode } =
   let open Dyn.Encoder in
   record
@@ -273,6 +275,7 @@ let to_dyn
     ; "dune_version", Syntax.Version.to_dyn dune_version
     ; "allow_approx_merlin", bool allow_approx_merlin
     ; "generate_opam_files", bool generate_opam_files
+    ; "synchronise_opam_deps", bool synchronise_opam_deps
     ; "file_key", string file_key
     ; "dialects", Dialect.DB.to_dyn dialects
     ; "explicit_js_mode", bool explicit_js_mode
@@ -600,6 +603,7 @@ let anonymous = lazy (
   ; dune_version = lang.version
   ; allow_approx_merlin = true
   ; generate_opam_files = false
+  ; synchronise_opam_deps = false
   ; file_key
   ; dialects = Dialect.DB.builtin
   ; explicit_js_mode
@@ -625,6 +629,22 @@ let default_name ~dir ~packages =
         [ Pp.textf "%S is not a valid opam package name."
             name
         ]
+
+let with_github_defaults t =
+  let homepage =
+    match t.homepage, t.source with
+    | None, Some (Github (user, repo)) ->
+      Some (sprintf "https://github.com/%s/%s" user repo)
+    | s, _ -> s
+  in
+  let bug_reports =
+    match t.bug_reports, t.source with
+    | None, Some (Github (user, repo)) ->
+      Some (sprintf "https://github.com/%s/%s/issues" user repo)
+    | s, _ -> s
+  in
+  {t with homepage; bug_reports }
+
 
 let parse ~dir ~lang ~opam_packages ~file =
   fields
@@ -668,23 +688,13 @@ let parse ~dir ~lang ~opam_packages ~file =
      and+ () = Versioned_file.no_more_lang
      and+ generate_opam_files = field_o_b "generate_opam_files"
                                   ~check:(Syntax.since Stanza.syntax (1, 10))
+     and+ synchronise_opam_deps = field_o_b "synchronise_opam_deps"
+                                  ~check:(Syntax.since Stanza.syntax (1, 12))
      and+ dialects =
        multi_field "dialect"
          (Syntax.since Stanza.syntax (1, 11) >>> located Dialect.decode)
      and+ explicit_js_mode =
        field_o_b "explicit_js_mode" ~check:(Syntax.since Stanza.syntax (1, 11))
-     in
-     let homepage =
-       match homepage, source with
-       | None, Some (Github (user, repo)) ->
-         Some (sprintf "https://github.com/%s/%s" user repo)
-       | s, _ -> s
-     in
-     let bug_reports =
-       match bug_reports, source with
-       | None, Some (Github (user, repo)) ->
-         Some (sprintf "https://github.com/%s/%s/issues" user repo)
-       | s, _ -> s
      in
      let packages =
        if List.is_empty packages then
@@ -762,6 +772,8 @@ let parse ~dir ~lang ~opam_packages ~file =
          ~default:(explicit_js_mode_default ~lang) in
      let generate_opam_files =
        Option.value ~default:false generate_opam_files in
+     let synchronise_opam_deps =
+       Option.value ~default:true (* TODO: false *) synchronise_opam_deps in
      let root = dir in
      let file_key = File_key.make ~name ~root in
      let dialects =
@@ -790,9 +802,10 @@ let parse ~dir ~lang ~opam_packages ~file =
      ; dune_version
      ; allow_approx_merlin
      ; generate_opam_files
+     ; synchronise_opam_deps
      ; dialects
      ; explicit_js_mode
-     })
+     } |> with_github_defaults)
 
 let encode
       { name ; root = _ ; version ; source; license; authors
@@ -800,7 +813,7 @@ let encode
       ; bug_reports ; maintainers
       ; extension_args; stanza_parser = _ ; packages
       ; implicit_transitive_deps ; wrapped_executables ; dune_version
-      ; allow_approx_merlin ; generate_opam_files
+      ; allow_approx_merlin ; generate_opam_files; synchronise_opam_deps
       ; file_key = _ ; dialects = _ ; explicit_js_mode } =
   let open Dune_lang.Encoder in
   let name = match name with
@@ -817,6 +830,7 @@ let encode
       ; field "allow_approximate_merlin" bool ~default:false allow_approx_merlin
       ; field "explicit_js_mode" bool ~default:(explicit_js_mode_default ~lang) explicit_js_mode
       ; field "generate_opam_files" bool ~default:false generate_opam_files
+      ; field "synchronise_opam_deps" bool ~default:false synchronise_opam_deps
       ; field "implicit_transitive_deps" bool ~default:(implicit_transitive_deps_default ~lang) implicit_transitive_deps
       ; field "wrapped_executables" bool ~default:(wrapped_executables_default ~lang) wrapped_executables
 
@@ -918,6 +932,7 @@ let update_from_opam packages t =
   let bug_reports = if is_custom bug_reports then bug_reports else None in
   { t with
     generate_opam_files = true
+  ; synchronise_opam_deps = true (* TODO: configurable *)
   ; dune_version = max t.dune_version (1, 10)
   ; license
   ; maintainers = merge_fields "maintainer"
@@ -927,7 +942,7 @@ let update_from_opam packages t =
   ; documentation
   ; bug_reports
   ; packages = Package.Name.Map.mapi ~f:generate_package packages
-  }
+  } |> with_github_defaults
 
 let update_project_file t ~f =
   let what = Project_file_edit.ensure_exists t.project_file in
@@ -980,6 +995,7 @@ let make_jbuilder_project ~dir opam_packages =
   ; dune_version = lang.version
   ; allow_approx_merlin = true
   ; generate_opam_files = false
+  ; synchronise_opam_deps = false
   ; wrapped_executables = false
   ; dialects
   ; explicit_js_mode = false
